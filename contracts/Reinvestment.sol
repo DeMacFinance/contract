@@ -86,7 +86,7 @@ contract Reinvestment is Ownable, IReinvestment {
             _updatePool(msg.sender);
             mdx.safeTransferFrom(msg.sender, address(this), amount);
 
-            UserInfo storage user = userInfo[msg.sender]; 
+            UserInfo storage user = userInfo[msg.sender];
             uint256 shares = _amountToShare(amount);
 
             // Update global info first
@@ -117,12 +117,14 @@ contract Reinvestment is Ownable, IReinvestment {
             require(userInfo[msg.sender].earnedMdxStored >= amount, "User don't have enough amount");
 
             _updatePool(msg.sender);
-            UserInfo storage user = userInfo[msg.sender]; 
+            UserInfo storage user = userInfo[msg.sender];
 
+            bool isWithdraw = false;
             if (mdx.myBalance() < amount) {
                 // If balance is not enough Withdraw from board room first.
                 (uint256 depositedMdx, /* rewardDebt */) = boardRoom.userInfo(boardRoomPid, address(this));
                 boardRoom.withdraw(boardRoomPid, depositedMdx);
+                isWithdraw = true;
             }
             mdx.safeTransfer(msg.sender, amount);
 
@@ -133,7 +135,10 @@ contract Reinvestment is Ownable, IReinvestment {
             user.totalShares = user.totalShares.sub(share);
             user.earnedMdxStored = user.earnedMdxStored.sub(amount);
 
-            boardRoom.deposit(boardRoomPid, mdx.myBalance());
+            // If withdraw mdx from board room, we need to redeposit.
+            if (isWithdraw) {
+                boardRoom.deposit(boardRoomPid, mdx.myBalance());
+            }
         }
     }
 
@@ -162,7 +167,17 @@ contract Reinvestment is Ownable, IReinvestment {
     }
 
     function _amountToShare(uint256 amount) internal view returns (uint256) {
-        return globalInfo.totalMdx == 0 ? 
+        return globalInfo.totalMdx == 0 ?
             amount : amount.mul(globalInfo.totalShares).div(globalInfo.totalMdx);
+    }
+
+    /* ==================================== Only Owner ==================================== */
+
+    // Used when boardroom is closed.
+    function stopReinvest() external onlyOwner {
+        (uint256 deposited, /* rewardDebt */) = boardRoom.userInfo(boardRoomPid, address(this));
+        if (deposited > 0) {
+            boardRoom.withdraw(boardRoomPid, deposited);
+        }
     }
 }
