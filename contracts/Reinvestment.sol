@@ -95,15 +95,19 @@ contract Reinvestment is Ownable, IReinvestment {
 
             // If there are some reserved shares
             if (reservedRatio != 0) {
-                UserInfo storage owner = userInfo[owner()]; 
+                UserInfo storage owner = userInfo[owner()];
                 uint256 ownerShares = shares.mul(reservedRatio).div(10000);
+                uint256 ownerAmount = amount.mul(reservedRatio).div(10000);
                 owner.totalShares = owner.totalShares.add(ownerShares);
+                owner.earnedMdxStored = owner.earnedMdxStored.add(ownerAmount);
 
                 // Calculate the left shares
                 shares = shares.sub(ownerShares);
+                amount = amount.sub(ownerAmount);
             }
 
             user.totalShares = user.totalShares.add(shares);
+            user.earnedMdxStored = user.earnedMdxStored.add(amount);
         }
     }
 
