@@ -1,5 +1,3 @@
-// Bank: 0xD42Ef222d33E3cB771DdA783f48885e15c9D5CeD
-
 pragma solidity ^0.6.0;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
@@ -201,7 +199,7 @@ contract Bank is Ownable, ReentrancyGuard {
 
     /* ==================================== Write ==================================== */
 
-    function deposit(address token, uint256 amount) public nonReentrant {
+    function deposit(address token, uint256 amount) public payable nonReentrant {
         TokenBank storage bank = banks[token];
         UserBankInfo storage user = userBankInfo[msg.sender];
         require(bank.isOpen && bank.canDeposit, 'Token not exist or cannot deposit');
@@ -209,10 +207,10 @@ contract Bank is Ownable, ReentrancyGuard {
         _calInterest(token);
 
         if (token != address(0)) {
-            // Token is not eth
+            // Token is not bnb
             SafeToken.safeTransferFrom(token, msg.sender, address(this), amount);
         } else {
-            require(address(this).balance >= amount, "Not enough bnb sended.");
+            amount = msg.value;
         }
 
         bank.totalVal = bank.totalVal.add(amount);
@@ -637,10 +635,9 @@ contract Bank is Ownable, ReentrancyGuard {
         nonReentrant
     {
         TokenBank storage bank = banks[token];
-        require(bank.isOpen, 'token not exists');
 
         uint256 balance = token == address(0)? address(this).balance: SafeToken.myBalance(token);
-        if(balance >= bank.totalVal.add(value)) {
+        if((bank.isOpen == false) || balance >= bank.totalVal.add(value)) {
             // Received not by deposit
         } else {
             bank.totalReserve = bank.totalReserve.sub(value);
@@ -652,9 +649,5 @@ contract Bank is Ownable, ReentrancyGuard {
         } else {
             SafeToken.safeTransfer(token, to, value);
         }
-    }
-
-    receive() external payable {
-        deposit(address(0), msg.value);
     }
 }
