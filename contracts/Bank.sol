@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 pragma solidity ^0.6.0;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
@@ -14,7 +15,7 @@ contract Bank is Ownable, ReentrancyGuard {
     using SafeToken for address;
     using SafeMath for uint256;
 
-    event OpPosition(uint256 indexed id, uint256[2] debts, uint[2] back);
+    event OpPosition(uint256 indexed id, uint256[2] debts, uint256[2] backs);
     event Liquidate(uint256 indexed id, address indexed killer, uint256[2] prize, uint256[2] left);
 
     using EnumerableSet for EnumerableSet.AddressSet;
@@ -53,8 +54,8 @@ contract Bank is Ownable, ReentrancyGuard {
 
         IGoblin goblin;
         uint256[2] minDebt;
-        uint256 openFactor;         // When open: (debts / total) should < (openFactor / 10000)
-        uint256 liquidateFactor;    // When liquidate: (debts / total) should > (liquidateFactor / 10000)
+        uint256 openFactor;         // When open: (debts / total) should <= (openFactor / 10000)
+        uint256 liquidateFactor;    // When liquidate: new health should <= (liquidateFactor / 10000)
     }
 
     struct Position {
@@ -71,11 +72,13 @@ contract Bank is Ownable, ReentrancyGuard {
 
     mapping(address => UserPPInfo) userPPInfo;      // User Productions, Positions Info.
 
-    mapping(uint256 => Production) public productions;
-    uint256 public currentPid = 1;
+    mapping(uint256 => Production) productions;
+    uint256 public currentProdId = 1;
 
-    mapping(uint256 => Position) public positions;
+    mapping(uint256 => Position) positions;     // pos info can read in positionInfo()
     uint256 public currentPos = 1;
+
+    EnumerableSet.UintSet allPosId;
 
     /* ----------------- Others ----------------- */
 
@@ -86,24 +89,22 @@ contract Bank is Ownable, ReentrancyGuard {
 
     // Used in opProduction to prevent stack over deep
     struct WorkAmount {
-        uint256 sendBSC;
+        uint256 sendBnb;
         uint256[2] beforeToken;      // How many token in the pool after borrow before goblin work
         uint256[2] debts;
         uint256[2] backToken;
-        bool[2] isBorrowBSC;
-        bool borrowed;
+        bool[2] isBorrowBnb;
     }
 
     // Used in liquidate to prevent stack over deep
     struct liqTemp {
         uint256[2] debts;
-        uint256[2] health;
+        uint256 health;
         uint256[2] before;
         uint256 back;           // Only one item is to save memory.
-        uint256 rest;           // Only one item is to save memory.
         uint256[2] prize;
         uint256[2] left;
-        bool[2] isBSC;
+        bool[2] isBnb;
     }
 
     modifier onlyEOA() {
@@ -117,10 +118,49 @@ contract Bank is Ownable, ReentrancyGuard {
 
     /* ==================================== Read ==================================== */
 
+    function posNum() external view returns (uint256) {
+        return EnumerableSet.length(allPosId);
+    }
+
+    // New health
+    function posIdAndHealth(uint256 start, uint256 num) external view returns (uint256[] memory, uint256[] memory) {
+        // Check num
+        {
+            uint256 len = EnumerableSet.length(allPosId);
+            require(start <= len, "Start can not be lager than len");
+            
+            len = len.sub(start);   // Left length from start
+            num = len < num ? len : num;
+        }
+
+        uint256[] memory posId = new uint256[](num);
+        uint256[] memory posHealth = new uint256[](num);
+
+        for (uint256 i = 0; i < num; ++i) {
+            uint256 tempPosId = EnumerableSet.at(allPosId, start.add(i));
+            Position storage pos = positions[tempPosId];
+            Production storage prod = productions[pos.productionId];
+            uint256 debt0 = debtShareToVal(prod.borrowToken[0], pos.debtShare[0]);
+            uint256 debt1 = debtShareToVal(prod.borrowToken[1], pos.debtShare[1]);
+
+            posId[i] = tempPosId;
+            posHealth[i] = prod.goblin.newHealth(tempPosId, prod.borrowToken, [debt0, debt1]);
+        }
+
+        return (posId, posHealth);
+    }
+
     function positionInfo(uint256 posId)
-        public
+        external
         view
-        returns (uint256, uint256[2] memory, uint256[2] memory, address)
+        returns (
+            uint256,                // prod id 
+            uint256,                // lp amount
+            uint256,                // new health
+            uint256[2] memory,      // health
+            uint256[2] memory,      // debts
+            address                 // owner
+        )
     {
         Position storage pos = positions[posId];
         Production storage prod = productions[pos.productionId];
@@ -128,8 +168,39 @@ contract Bank is Ownable, ReentrancyGuard {
         uint256 debt0 = debtShareToVal(prod.borrowToken[0], pos.debtShare[0]);
         uint256 debt1 = debtShareToVal(prod.borrowToken[1], pos.debtShare[1]);
 
-        return (pos.productionId, prod.goblin.health(posId, prod.borrowToken, [debt0, debt1]),
-            [debt0, debt1], pos.owner);
+        return (
+            pos.productionId,
+            prod.goblin.posLPAmount(posId),
+            prod.goblin.newHealth(posId, prod.borrowToken, [debt0, debt1]),
+            prod.goblin.health(posId, prod.borrowToken, [debt0, debt1]),
+            [debt0, debt1],
+            pos.owner);
+    }
+
+    function productionsInfo(uint256 prodId) 
+        external 
+        view 
+        returns (
+            address[2] memory,  // borrowToken
+            bool,               // isOpen
+            bool[2] memory,     // canBorrow
+            address,            // goblin
+            uint256[2] memory,  // minDebt
+            uint256,            // openFactor   
+            uint256             // liquidateFactor
+        )
+    {
+        Production storage prod = productions[prodId];
+        
+        return (
+            [prod.borrowToken[0], prod.borrowToken[1]], 
+            prod.isOpen, 
+            [prod.canBorrow[0], prod.canBorrow[1]], 
+            address(prod.goblin), 
+            [prod.minDebt[0], prod.minDebt[0]], 
+            prod.openFactor, 
+            prod.liquidateFactor
+        );
     }
 
     // Total amount, not including reserved
@@ -137,10 +208,15 @@ contract Bank is Ownable, ReentrancyGuard {
         TokenBank storage bank = banks[token];
         require(bank.isOpen, 'token not exists');
 
-        uint balance = token == address(0)? address(this).balance: SafeToken.myBalance(token);
+        uint256 balance = token == address(0)? address(this).balance: SafeToken.myBalance(token);
         balance = bank.totalVal < balance? bank.totalVal: balance;
 
-        return balance.add(bank.totalDebt).sub(bank.totalReserve);
+        balance = balance.add(bank.totalDebt);
+        if (balance > bank.totalReserve) {
+            return balance.sub(bank.totalReserve);
+        } else {
+            return 0;
+        }
     }
 
     function debtShareToVal(address token, uint256 debtShare) public view returns (uint256) {
@@ -172,11 +248,35 @@ contract Bank is Ownable, ReentrancyGuard {
         return EnumerableSet.at(userBankInfo[account].banksAddress, index);
     }
 
-    function userSharesPreTokoen(address account, address token) external view returns (uint256) {
+    function userSharesPerTokoen(address account, address token) external view returns (uint256) {
         return userBankInfo[account].sharesPerToken[token];
     }
 
+    function earnPertoken(address account, address token) public view returns (uint256) {
+        TokenBank storage bank = banks[token];
+        return Farm.stakeEarnedPerPool(bank.poolId, account);
+    }
+
+    function earn(address account) external view returns (uint256) {
+        uint256 totalEarn = 0;
+        for (uint256 index = 0; index < userBanksNum(account); ++index) {
+            totalEarn = totalEarn.add(earnPertoken(account, userBankAddress(account, index)));
+        }
+        return totalEarn;
+    }
+
     /* ---- User Positions Info ---- */
+
+    function userAllPosId(address account) external view returns (uint256[] memory) {
+        uint256 len = userPosNum(account);
+        uint256[] memory posId = new uint256[](len);
+
+        for (uint256 i = 0; i < len; ++i) {
+            posId[i] = userPosId(account, i);
+        }
+
+        return posId;
+    }
 
     function userPosNum(address account) public view returns (uint256) {
         return EnumerableSet.length(userPPInfo[account].posId);
@@ -188,6 +288,17 @@ contract Bank is Ownable, ReentrancyGuard {
 
     /* ---- User Productions Info ---- */
 
+    function userAllProdId(address account) external view returns (uint256[] memory) {
+        uint256 len = userProdNum(account);
+        uint256[] memory prodId = new uint256[](len);
+
+        for (uint256 i = 0; i < len; ++i) {
+            prodId[i] = userProdId(account, i);
+        }
+
+        return prodId;
+    }
+
     function userProdNum(address account) public view returns (uint256) {
         return EnumerableSet.length(userPPInfo[account].prodId);
     }
@@ -196,9 +307,14 @@ contract Bank is Ownable, ReentrancyGuard {
         return EnumerableSet.at(userPPInfo[account].prodId, index);
     }
 
+    function userEarnPerProd(address account, uint256 prodId) external view returns (uint256, uint256) {
+        Production storage prod = productions[prodId];
+        return prod.goblin.userAmount(account);
+    }
+
     /* ==================================== Write ==================================== */
 
-    function deposit(address token, uint256 amount) public payable nonReentrant {
+    function deposit(address token, uint256 amount) external payable nonReentrant {
         TokenBank storage bank = banks[token];
         UserBankInfo storage user = userBankInfo[msg.sender];
         require(bank.isOpen && bank.canDeposit, 'Token not exist or cannot deposit');
@@ -242,10 +358,14 @@ contract Bank is Ownable, ReentrancyGuard {
 
         Farm.withdraw(bank.poolId, msg.sender, withdrawShares);
 
-        // get DEMA rewards
-        getBankRewards();
+        if (config.canPayRewardsLending() == 1) {
+            _getBankRewardsPerToken(token);
+        } else if (config.canPayRewardsLending() == 2) {
+            // get DEMA rewards
+            _getBankRewards();
+        }
 
-        if (token == address(0)) {//BSC
+        if (token == address(0)) {//Bnb
             SafeToken.safeTransferETH(msg.sender, amount);
         } else {
             SafeToken.safeTransfer(token, msg.sender, amount);
@@ -256,7 +376,7 @@ contract Bank is Ownable, ReentrancyGuard {
      * @dev Create position:
      * opPosition(0, productionId, [borrow0, borrow1],
      *     [addLpStrategyAddress, _token0, _token1, token0Amount, token1Amount, _minLPAmount] )
-     * note: if token is BSC, token address should be address(0);
+     * note: if token is Bnb, token address should be address(0);
      *
      * @dev Replenishment:
      * opPosition(posId, productionId, [0, 0],
@@ -273,7 +393,7 @@ contract Bank is Ownable, ReentrancyGuard {
      * note: rate means how many LP will be removed liquidity. max rate is 10000 means 100%.
      *       All withdrawn LP will used to repay debts.
      */
-    function opPosition(uint256 posId, uint256 pid, uint256[2] calldata borrow, bytes calldata data)
+    function opPosition(uint256 posId, uint256 prodId, uint256[2] calldata borrow, bytes calldata data)
         external
         payable
         onlyEOA
@@ -283,22 +403,23 @@ contract Bank is Ownable, ReentrancyGuard {
         if (posId == 0) {
             // Create a new position
             posId = currentPos;
-            currentPos ++;
+            currentPos++;
             positions[posId].owner = msg.sender;
-            positions[posId].productionId = pid;
+            positions[posId].productionId = prodId;
 
             EnumerableSet.add(user.posId, posId);
-            EnumerableSet.add(user.prodId, pid);
-            user.posNum[pid] = user.posNum[pid].add(1);
+            EnumerableSet.add(allPosId, posId);
+            EnumerableSet.add(user.prodId, prodId);
+            user.posNum[prodId] = user.posNum[prodId].add(1);
 
         } else {
             require(posId < currentPos, "bad position id");
             require(positions[posId].owner == msg.sender, "not position owner");
 
-            pid = positions[posId].productionId;
+            prodId = positions[posId].productionId;
         }
 
-        Production storage production = productions[pid];
+        Production storage production = productions[prodId];
 
         require(production.isOpen, 'Production not exists');
 
@@ -309,31 +430,33 @@ contract Bank is Ownable, ReentrancyGuard {
         _calInterest(production.borrowToken[1]);
 
         WorkAmount memory amount;
-        amount.sendBSC = msg.value;
+        amount.sendBnb = msg.value;
         amount.debts = _removeDebt(positions[posId], production);
         uint256 i;
 
         for (i = 0; i < 2; ++i) {
             amount.debts[i] = amount.debts[i].add(borrow[i]);
-            amount.isBorrowBSC[i] = production.borrowToken[i] == address(0);
+            amount.isBorrowBnb[i] = production.borrowToken[i] == address(0);
 
             // Save the amount of borrow token after borrowing before goblin work.
-            if (amount.isBorrowBSC[i]) {
-                amount.sendBSC = amount.sendBSC.add(borrow[i]);
-                require(amount.sendBSC <= address(this).balance && amount.debts[i] <= banks[production.borrowToken[i]].totalVal,
-                    "insufficient BSC in the bank");
-                amount.beforeToken[i] = address(this).balance.sub(amount.sendBSC);
+            if (amount.isBorrowBnb[i]) {
+                amount.sendBnb = amount.sendBnb.add(borrow[i]);
+                require(amount.sendBnb <= address(this).balance && 
+                    (borrow[i] == 0 || amount.debts[i] <= totalToken(production.borrowToken[i])),
+                    "insufficient Bnb in the bank");
+                amount.beforeToken[i] = address(this).balance.sub(amount.sendBnb);
 
             } else {
                 amount.beforeToken[i] = SafeToken.myBalance(production.borrowToken[i]);
-                require(borrow[i] <= amount.beforeToken[i] && amount.debts[i] <= banks[production.borrowToken[i]].totalVal,
+                require(borrow[i] <= amount.beforeToken[i] && 
+                    (borrow[i] == 0 || amount.debts[i] <= totalToken(production.borrowToken[i])),
                     "insufficient borrowToken in the bank");
                 amount.beforeToken[i] = amount.beforeToken[i].sub(borrow[i]);
                 SafeToken.safeApprove(production.borrowToken[i], address(production.goblin), borrow[i]);
             }
         }
 
-        production.goblin.work{value: amount.sendBSC}(
+        production.goblin.work{value: amount.sendBnb}(
             posId,
             msg.sender,
             production.borrowToken,
@@ -342,24 +465,23 @@ contract Bank is Ownable, ReentrancyGuard {
             data
         );
 
-        amount.borrowed = false;
-
         // Calculate the back token amount
         for (i = 0; i < 2; ++i) {
-            amount.backToken[i] = amount.isBorrowBSC[i] ? (address(this).balance.sub(amount.beforeToken[i])) :
+            amount.backToken[i] = amount.isBorrowBnb[i] ? (address(this).balance.sub(amount.beforeToken[i])) :
                 SafeToken.myBalance(production.borrowToken[i]).sub(amount.beforeToken[i]);
 
-            if(amount.backToken[i] > amount.debts[i]) {
+            if(amount.backToken[i] >= amount.debts[i]) {
                 // backToken are much more than debts, so send back backToken-debts.
                 amount.backToken[i] = amount.backToken[i].sub(amount.debts[i]);
                 amount.debts[i] = 0;
 
-                amount.isBorrowBSC[i] ? SafeToken.safeTransferETH(msg.sender, amount.backToken[i]):
-                    SafeToken.safeTransfer(production.borrowToken[i], msg.sender, amount.backToken[i]);
+                if (amount.backToken[i] > 0) {
+                    amount.isBorrowBnb[i] ? SafeToken.safeTransferETH(msg.sender, amount.backToken[i]):
+                        SafeToken.safeTransfer(production.borrowToken[i], msg.sender, amount.backToken[i]);
+                }
 
-            } else if (amount.debts[i] > amount.backToken[i]) {
+            } else {
                 // There are some borrow token
-                amount.borrowed = true;
                 amount.debts[i] = amount.debts[i].sub(amount.backToken[i]);
                 amount.backToken[i] = 0;
 
@@ -367,51 +489,56 @@ contract Bank is Ownable, ReentrancyGuard {
             }
         }
 
-        if (amount.borrowed) {
+        if ((amount.debts[0] > 0 || amount.debts[1] > 0) && 
+            production.goblin.posLPAmount(posId) != 0) 
+        {
+            // If this pos is not empty and has debts, add debts.
+            _addDebt(positions[posId], production, amount.debts);
+        }
+
+        if (borrow[0] > 0 || borrow[1] > 0) { 
             // Return the amount of each borrow token can be withdrawn with the given borrow amount rate.
             uint256[2] memory health = production.goblin.health(posId, production.borrowToken, amount.debts);
 
             require(health[0].mul(production.openFactor) >= amount.debts[0].mul(10000), "bad work factor");
             require(health[1].mul(production.openFactor) >= amount.debts[1].mul(10000), "bad work factor");
-
-            _addDebt(positions[posId], production, amount.debts);
         }
-        // Then user may withdraw some or repay. get rewards of all pos.
-        else {
-            // Get all rewards.
-            getRewardsAllProd();
-            // If the lp amount in current pos is 0, delete the pos.
-            if (production.goblin.posLPAmount(posId) == 0) {
-                EnumerableSet.remove(user.posId, posId);
-                user.posNum[pid] = user.posNum[pid].add(1);
+        // If the lp amount in current pos is 0, delete the pos.
+        else if (production.goblin.posLPAmount(posId) == 0) {
+            EnumerableSet.remove(user.posId, posId);
+            EnumerableSet.remove(allPosId, posId);
+            positions[posId].owner = address(0);        // Clear pos owner in case create again.
+            user.posNum[prodId] = user.posNum[prodId].sub(1);
+
+            if (config.canPayRewardsProd() == 1) {
+                _getRewardsPerProd(prodId);
+            } else if (config.canPayRewardsProd() == 2) {
+                // Get all rewards. Note that it MUST after user.posNum update.
+                _getRewardsAllProd();
             }
         }
 
         emit OpPosition(posId, amount.debts, amount.backToken);
     }
 
-    function liquidate(uint256 posId) external payable onlyEOA nonReentrant {
+    function liquidate(uint256 posId) external onlyEOA nonReentrant {
         Position storage pos = positions[posId];
 
-        require(pos.debtShare[0] > 0 || pos.debtShare[1] > 0, "no debts");
+        // While using new health, if user loss too much, it also can be liquidated.
+        // require(pos.debtShare[0] > 0 || pos.debtShare[1] > 0, "no debts");
         Production storage production = productions[pos.productionId];
         liqTemp memory temp;
 
         temp.debts = _removeDebt(pos, production);
 
-        temp.health = production.goblin.health(posId, production.borrowToken, temp.debts);
-
-        require((temp.health[0].mul(production.liquidateFactor) <= temp.debts[0].mul(10000)) &&
-                (temp.health[1].mul(production.liquidateFactor) <= temp.debts[1].mul(10000)), "can't liquidate");
-
-        temp.isBSC;
-        temp.before;
+        temp.health = production.goblin.newHealth(posId, production.borrowToken, temp.debts);
+        require(temp.health < production.liquidateFactor, "can't liquidate");
 
         // Save before amount
         uint256 i;
         for (i = 0; i < 2; ++i) {
-            temp.isBSC[i] = production.borrowToken[i] == address(0);
-            temp.before[i] = temp.isBSC[i] ? address(this).balance : SafeToken.myBalance(production.borrowToken[0]);
+            temp.isBnb[i] = production.borrowToken[i] == address(0);
+            temp.before[i] = temp.isBnb[i] ? address(this).balance : SafeToken.myBalance(production.borrowToken[i]);
         }
 
         production.goblin.liquidate(posId, pos.owner, production.borrowToken, temp.debts);
@@ -419,49 +546,67 @@ contract Bank is Ownable, ReentrancyGuard {
         // Delete the pos from owner, posNum -= 1.
         UserPPInfo storage owner = userPPInfo[pos.owner];
         EnumerableSet.remove(owner.posId, posId);
+        EnumerableSet.remove(allPosId, posId);
         owner.posNum[pos.productionId] = owner.posNum[pos.productionId].sub(1);
 
-        // Check back amount. Send reward to sender, and send rest token back to pos.owner.
-        temp.back;   // To save memory.
-        temp.rest;   // To save memory.
-
-        temp.prize;
-        temp.left;
-
+        // Check back amount. Repay first then send reward to sender, finally send left token back to pos.owner.
         for (i = 0; i < 2; ++i) {
-            temp.back = temp.isBSC[i] ? address(this).balance: SafeToken.myBalance(production.borrowToken[i]);
+            temp.back = temp.isBnb[i] ? address(this).balance: SafeToken.myBalance(production.borrowToken[i]);
             temp.back = temp.back.sub(temp.before[i]);
+            
+            if (temp.back > temp.debts[i]) {
+                temp.back = temp.back.sub(temp.debts[i]);
+                temp.prize[i] = temp.back.mul(config.getLiquidateBps()).div(10000);
+                temp.left[i] = temp.back.sub(temp.prize[i]);
 
-            temp.prize[i] = temp.back.mul(config.getLiquidateBps()).div(10000);
-            temp.rest = temp.back.sub(temp.prize[i]);
-            temp.left[i] = 0;
-
-            // Send reward to sender
-            if (temp.prize[i] > 0) {
-                temp.isBSC[i] ?
-                    SafeToken.safeTransferETH(msg.sender, temp.prize[i]) :
-                    SafeToken.safeTransfer(production.borrowToken[i], msg.sender, temp.prize[i]);
-            }
-
-            // Send rest token to pos.owner.
-            if (temp.rest > temp.debts[i]) {
-                temp.left[i] = temp.rest.sub(temp.debts[i]);
-                temp.isBSC[i] ?
-                    SafeToken.safeTransferETH(pos.owner, temp.left[i]) :
-                    SafeToken.safeTransfer(production.borrowToken[i], pos.owner, temp.left[i]);
+                // Send reward to sender
+                if (temp.prize[i] > 0) {
+                    temp.isBnb[i] ?
+                        SafeToken.safeTransferETH(msg.sender, temp.prize[i]) :
+                        SafeToken.safeTransfer(production.borrowToken[i], msg.sender, temp.prize[i]);
+                }
+                // Send left token to pos.owner.
+                if (temp.left[i] > 0) {
+                    temp.isBnb[i] ?
+                        SafeToken.safeTransferETH(pos.owner, temp.left[i]) :
+                        SafeToken.safeTransfer(production.borrowToken[i], pos.owner, temp.left[i]);
+                }
             } else {
-                banks[production.borrowToken[i]].totalVal = 
-                    banks[production.borrowToken[i]].totalVal.sub(temp.debts[i]).add(temp.rest);
+                banks[production.borrowToken[i]].totalVal =
+                    banks[production.borrowToken[i]].totalVal.sub(temp.debts[i]).add(temp.back);
             }
         }
 
+        positions[posId].owner = address(0);        // Clear pos owner in case create again.
         emit Liquidate(posId, msg.sender, temp.prize, temp.left);
     }
 
     /* ----------------- Get rewards ----------------- */
 
     // Send earned DEMA from per token bank to user.
-    function getBankRewardsPerToken(address token) public {
+    function getBankRewardsPerToken(address token) public nonReentrant{
+        _getBankRewardsPerToken(token);
+    }
+
+    // Send earned DEMA from all tokens to user.
+    function getBankRewards() external nonReentrant{
+        _getBankRewards();
+    }
+
+    // Get MDX and DEMA rewards of per production
+    function getRewardsPerProd(uint256 prodId) external nonReentrant{
+        _getRewardsPerProd(prodId);
+    }
+
+    // Get MDX and DEMA rewards of all productions
+    function getRewardsAllProd() external nonReentrant{
+        _getRewardsAllProd();
+    }
+
+    /* ==================================== Internal ==================================== */
+
+    // Send earned DEMA from per token bank to user.
+    function _getBankRewardsPerToken(address token) internal {
         TokenBank storage bank = banks[token];
         Farm.getStakeRewardsPerPool(bank.poolId, msg.sender);
 
@@ -473,14 +618,14 @@ contract Bank is Ownable, ReentrancyGuard {
     }
 
     // Send earned DEMA from all tokens to user.
-    function getBankRewards() public {
-        for (uint256 index = 0; index < userBanksNum(msg.sender); ++index) {
-            getBankRewardsPerToken(userBankAddress(msg.sender, index));
+    function _getBankRewards() internal {
+        for (uint256 index = userBanksNum(msg.sender); index > 0; --index) {
+            _getBankRewardsPerToken(userBankAddress(msg.sender, index - 1));
         }
     }
 
     // Get MDX and DEMA rewards of per production
-    function getRewardsPerProd(uint256 prodId) public {
+    function _getRewardsPerProd(uint256 prodId) internal {
         productions[prodId].goblin.getAllRewards(msg.sender);
 
         // Delete pool if no left pos.
@@ -488,17 +633,14 @@ contract Bank is Ownable, ReentrancyGuard {
         if (user.posNum[prodId] == 0) {
             EnumerableSet.remove(user.prodId, prodId);
         }
-
     }
 
     // Get MDX and DEMA rewards of all productions
-    function getRewardsAllProd() public {
-        for (uint256 i = 0; i < userProdNum(msg.sender); ++i) {
-            getRewardsPerProd(userProdId(msg.sender, i));
+    function _getRewardsAllProd() internal {
+        for (uint256 i = userProdNum(msg.sender); i > 0; --i) {
+            _getRewardsPerProd(userProdId(msg.sender, i-1));
         }
     }
-
-    /* ==================================== Internal ==================================== */
 
     function _addDebt(Position storage pos, Production storage production, uint256[2] memory debtVal) internal {
         for (uint256 i = 0; i < 2; ++i) {
@@ -590,7 +732,7 @@ contract Bank is Ownable, ReentrancyGuard {
     }
 
     function opProduction(
-        uint256 pid,
+        uint256 prodId,
         bool isOpen,
         bool[2] calldata canBorrow,
         address[2] calldata borrowToken,
@@ -602,18 +744,20 @@ contract Bank is Ownable, ReentrancyGuard {
         external
         onlyOwner
     {
-        // If two borrow tokens are same, meas only borrow one token. Then debt[1] and canBorrow[1] must be 0; 
-        require(borrowToken[0] != borrowToken[1] || 
-            (minDebt[1] == 0 && canBorrow[1] == false), "Borrow tokens cannot be same or only borrow one token");
+        require(borrowToken[0] != borrowToken[1], "Borrow tokens cannot be same");
+        require(canBorrow[0] || minDebt[0]==0, "Token 0 can borrow or min debt should be 0");
+        require(canBorrow[1] || minDebt[1]==0, "Token 1 can borrow or min debt should be 0");
+        require(openFactor < 10000, "Open factor should less than 10000");
+        require(liquidateFactor < 9000, "Liquidate factor should less than 9000");
 
-        if(pid == 0){
-            pid = currentPid;
-            currentPid ++;
+        if(prodId == 0){
+            prodId = currentProdId;
+            currentProdId ++;
         } else {
-            require(pid < currentPid, "bad production id");
+            require(prodId < currentProdId, "bad production id");
         }
 
-        Production storage production = productions[pid];
+        Production storage production = productions[prodId];
         production.isOpen = isOpen;
         production.canBorrow = canBorrow;
 
@@ -634,7 +778,7 @@ contract Bank is Ownable, ReentrancyGuard {
         TokenBank storage bank = banks[token];
 
         uint256 balance = token == address(0)? address(this).balance: SafeToken.myBalance(token);
-        if((bank.isOpen == false) || balance >= bank.totalVal.add(value)) {
+        if(balance >= bank.totalVal.add(value)) {
             // Received not by deposit
         } else {
             bank.totalReserve = bank.totalReserve.sub(value);
@@ -647,4 +791,6 @@ contract Bank is Ownable, ReentrancyGuard {
             SafeToken.safeTransfer(token, to, value);
         }
     }
+    
+    receive() external payable {}
 }

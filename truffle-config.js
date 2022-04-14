@@ -21,6 +21,7 @@
 require('dotenv').config();
 const HDWalletProvider = require('@truffle/hdwallet-provider');
 const privateKey = process.env.KEY;
+const BSCSCANAPIKEY = process.env.APIKEY;
 
 module.exports = {
   /**
@@ -32,6 +33,13 @@ module.exports = {
    *
    * $ truffle test --network <network-name>
    */
+
+  plugins: [
+    'truffle-plugin-verify'
+  ],
+  api_keys: {
+    bscscan: BSCSCANAPIKEY
+  },
 
   networks: {
     // Useful for testing. The `development` name is special - truffle uses it by default
@@ -66,19 +74,44 @@ module.exports = {
     // },
     // Useful for private networks
     bsctest: {
-      provider: () => new HDWalletProvider(privateKey, "https://data-seed-prebsc-1-s1.binance.org:8545/"),
+      // https://data-seed-prebsc-1-s1.binance.org:8545
+      // https://data-seed-prebsc-2-s1.binance.org:8545
+      // https://data-seed-prebsc-1-s2.binance.org:8545
+      // https://data-seed-prebsc-2-s2.binance.org:8545
+      networkCheckTimeout: 10000000,
+      provider: () => new HDWalletProvider(privateKey, "https://data-seed-prebsc-2-s2.binance.org:8545"),
       network_id: 97,
       gas: 8000000,           // Gas sent with each transaction (default: ~6700000)
       gasPrice: 20000000000,   // 20 gwei (in wei)
-      production: true        // Treats this network as if it was a public net. (default: false)
+      // production: true        // Treats this network as if it was a public net. (default: false)
     },
-
+    bscmain: {
+      networkCheckTimeout: 10000000,
+      provider: () => new HDWalletProvider(privateKey, "https://bsc-dataseed4.ninicoin.io/"),
+      network_id: 56,
+      confirmations: 2,
+      timeoutBlocks: 200,
+      gas: 8000000,           // Gas sent with each transaction (default: ~6700000)
+      gasPrice: 5000000000,   // 5 gwei (in wei)
+      // production: true        // Treats this network as if it was a public net. (default: false)
+    },
+    matic: {
+      networkCheckTimeout: 10000000,
+      provider: () => new HDWalletProvider(privateKey, "https://matic-mainnet.chainstacklabs.com"),
+      network_id: 137,
+      confirmations: 2,
+      timeoutBlocks: 200,
+      gas: 8000000,           // Gas sent with each transaction (default: ~6700000)
+      gasPrice: 50000000000,   // 50 gwei (in wei)
+      // production: true        // Treats this network as if it was a public net. (default: false)
+    },
     hecotest: {
+      networkCheckTimeout: 10000000,
       provider: () => new HDWalletProvider(privateKey, "https://http-testnet.hecochain.com"),
       network_id: 256,
       gas: 8000000,           // Gas sent with each transaction (default: ~6700000)
       gasPrice: 1000000000,   // 1 gwei (in wei)
-      production: true        // Treats this network as if it was a public net. (default: false)
+      // production: true        // Treats this network as if it was a public net. (default: false)
     },
   },
 
@@ -90,7 +123,7 @@ module.exports = {
   // Configure your compilers
   compilers: {
     solc: {
-      version: "0.6.6",    // Fetch exact version from solc-bin (default: truffle's version)
+      version: "0.6.12",    // Fetch exact version from solc-bin (default: truffle's version)
       // docker: false,        // Use "0.5.1" you've installed locally with docker (default: false)
       settings: {          // See the solidity docs for advice about optimization and evmVersion
        optimizer: {

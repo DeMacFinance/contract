@@ -7,15 +7,75 @@
     "test": "test"
   },
   "scripts": {
+    "decode": "node scripts/opPos_params_decode.js",
+
     "compile": "truffle compile",
-    "migrate3": "truffle migrate --f 3 --to 3",
-    "migratebsc": "truffle migrate --network bsctest",
+    
+    "minit": "truffle migrate --f 1 --to 1",
+    "minit:test": "truffle migrate --compile-none --f 1 --to 1 --network bsctest",
+    "minit:bsc": "truffle migrate --compile-none --f 1 --to 1 --network bscmain",
+    "minit:matic": "truffle migrate --compile-none --f 1 --to 1 --network matic",
+
+    "muser": "truffle migrate --f 2 --to 2",
+    "muser:test": "truffle migrate --f 2 --to 2 --network bsctest",
+    "muser:bsc": "truffle migrate --f 2 --to 2 --network bscmain",
+    "muser:matic": "truffle migrate --f 2 --to 2 --network matic",
+
+    "mmdx": "truffle migrate --f 3 --to 3",
+    "mmdx:test": "truffle migrate --f 3 --to 3 --network bsctest",
+
+    "mcake": "truffle migrate --f 4 --to 4",
+    "mcake:test": "truffle migrate --compile-none --f 4 --to 4 --network bsctest",
+
+    "mbank": "truffle migrate --f 5 --to 5",
+    "mbank:test": "truffle migrate --compile-none --f 5 --to 5 --network bsctest",
+    "mbank:bsc": "truffle migrate --compile-none --f 5 --to 5 --network bscmain",
+    "mbank:matic": "truffle migrate --compile-none --f 5 --to 5 --network matic",
+
+    "mgoblin": "truffle migrate --f 6 --to 6",
+    "mgoblin:test": "truffle migrate --compile-none --f 6 --to 6 --network bsctest",
+    "mgoblin:bsc": "truffle migrate --compile-none --f 6 --to 6 --network bscmain",
+
+    "mall:test": "truffle migrate --compile-none --network bsctest",
+
+
     "bankinit": "truffle exec ./scripts/bank_init.js",
-    "bankinitbsc": "truffle exec ./scripts/bank_init.js --network bsctest",
+    "bankinit:test": "truffle exec ./scripts/bank_init.js --network bsctest",
+    "dexinit:test": "truffle exec ./scripts/dex_init.js --network bsctest",
+    "openpos:test": "truffle exec ./scripts/open_position.js --network bsctest",
+    "price:test": "truffle exec ./scripts/get_price.js --network bsctest",
+    "getstatus:test": "truffle exec ./scripts/get_status.js --network bsctest",
+    "misc:test": "truffle exec ./scripts/misc.js --network bsctest",
+
+    "bankAddPool:bsc": "truffle exec ./scripts/bank_add_pool.js --network bscmain",
+    "openpos:bsc": "truffle exec ./scripts/open_position.js --network bscmain",
+    "dexinit:bsc": "truffle exec ./scripts/dex_init.js --network bscmain",
+
     "console": "truffle console",
     "consolebsc": "truffle console --network bsctest",
-    "testBank": "truffle test ./test/test_bank.js",
-    "test": "mocha ./test/test_UserProfile.js"
+
+    "vdema:test": "truffle run verify DEMA@0x664C23D8d1c32E9416F618760a435F0093b7EcAE --network bsctest",
+    "vbank:test": "truffle run verify Bank@0xaD468Fa401e4D6ba39d6EFddab3C440bf371B8b9 --network bsctest",
+    "vbankconfig:test": "truffle run verify BankConfig@0xc9245FA6776442301BE4b42b047Ad3a4be6d3201 --network bsctest",
+    "vmodel:test": "truffle run verify TripleSlopeModel@0xebb8E0051A8b42d4FD8aE27C9Dd46b840c7D8919 --network bsctest",
+
+    "vdema:bsc": "truffle run verify DEMA@0x4C8a3e4cd7EDD0Be168bBaf39031891D84F829d1 --network bscmain",
+    "vup:bsc": "truffle run verify UserProfile@0x1c1E763676e9E1557c067FAE2EfE48e8ad092e94 --network bscmain",
+    "vmodel:bsc": "truffle run verify TripleSlopeModel@0x226b6767e16b4fec42e5fd8d320c999f0349ec34 --network bscmain",
+    "vbankconfig:bsc": "truffle run verify BankConfig@0x6fd136d28de7594b0322f172f67616b322997d41 --network bscmain",
+    "vfarm:bsc": "truffle run verify Farm@0x48f062b77198762ab0444b9a83b1a62d5b7b9e60 --network bscmain",
+    "vbank:bsc": "truffle run verify Bank@0x961f3403c02d61ab4ec400abea133d4c64689dd8 --network bscmain",
+    "vgoblin:bsc": "truffle run verify CakeGoblin@0x2a93b94AC5B88F59693d2bF31e2aE88584b2a689 --network bscmain",
+    "vreinvest:bsc": "truffle run verify CakeReinvestment@0xDdd2fEc7132950037CC81a0EBD5Bd91738558895 --network bscmain",
+
+    "testbank": "truffle test ./test/test_bank.js",
+    "testuser": "truffle test ./test/test_UserProfile.js --show-events",
+    "testadds": "truffle test ./test/test_add_strategy.js",
+    "testwds": "truffle test ./test/test_withdraw_strategy.js",
+    "testreinvestment": "truffle test ./test/TestReinvestment.test.js",
+    "testrewardspershare": "truffle test ./test/TestRewardsPerShare.test.js",
+    "testprod": "truffle test ./test/test_productions_basic_usage.js",
+    "testliquidate": "truffle test ./test/test_productions_liquidate.js"
   },
   "repository": {
     "type": "git",
@@ -29,15 +89,19 @@
   "homepage": "https://github.com/DeMacFinance/contract#readme",
   "dependencies": {
     "@openzeppelin/contracts": "^3.3.0",
+    "@pancakeswap/pancake-swap-lib": "^0.0.1",
     "@truffle/hdwallet-provider": "^1.2.6",
     "bignumber.js": "^9.0.1",
     "bn.js": "^5.2.0",
     "dotenv": "^8.2.0",
     "install": "^0.13.0",
     "npm": "^7.10.0",
+    "truffle-contract": "^4.0.31",
     "web3": "^1.3.6"
   },
   "devDependencies": {
-    "mocha": "^8.4.0"
+    "@openzeppelin/test-helpers": "^0.5.11",
+    "mocha": "^8.4.0",
+    "truffle-plugin-verify": "^0.5.14"
   }
 }

@@ -1,5 +1,9 @@
 # DeMac Contract Introduction
 
+## Audit
+
+[https://www.fairyproof.com/doc/048.DEMAC-Audit-Report-060921.pdf](https://www.fairyproof.com/doc/048.DEMAC-Audit-Report-060921.pdf)
+
 ## Features
 
 There are two main features.

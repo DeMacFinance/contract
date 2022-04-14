@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 pragma solidity ^0.6.0;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
@@ -6,8 +7,8 @@ import "@openzeppelin/contracts/math/SafeMath.sol";
 import "@openzeppelin/contracts/utils/EnumerableSet.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-import "./Interface/IFarm.sol";
-import "./Interface/IDEMA.sol";
+import "./interface/IFarm.sol";
+import "./interface/IDEMA.sol";
 import "./interface/IUserProfile.sol";
 
 // Check all the div params MUST not be 0;
@@ -102,12 +103,15 @@ contract Farm is IFarm, Ownable, ReentrancyGuard {
         return pool.rewardRate.mul(pool.periodDuration);
     }
 
-    function totalShares() external view override returns (uint256) {
-        uint256 total = 0;
-        for (uint256 poolId = 0; poolId < nextPoolId; ++poolId) {
-            total = total.add(poolInfo[poolId].totalShares);
+    function totalPaidRewards() external view returns (uint256) {
+        uint256 totalPaid = 0;
+
+        for (uint256 i = 0; i < nextPoolId; ++i) {
+            PoolInfo storage pool = poolInfo[i];
+            totalPaid = totalPaid.add(pool.rewardsPaid);
         }
-        return total;
+
+        return totalPaid;
     }
 
     /* ----------------- User Staked Info ----------------- */
@@ -135,21 +139,12 @@ contract Farm is IFarm, Ownable, ReentrancyGuard {
     }
 
     // Rewards amount for bonus in all pools.
-    function bonusEarned(address account) public view override returns (uint256) {
+    function bonusEarned(address account) external view override returns (uint256) {
         uint256 totalEarned = 0;
         for (uint256 index = 0; index < bonusPoolsLength(account); ++index) {
             totalEarned = totalEarned.add(bonusEarnedPerPool(bonusPoolsId(account, index), account));
         }
         return totalEarned;
-    }
-
-    // Total shares of bonus.
-    function bonusShares(address account) external view override returns (uint256) {
-        uint256 _totalShares = 0;
-        for (uint256 index = 0; index < bonusPoolsLength(account); ++index) {
-            _totalShares = _totalShares.add(bonus[bonusPoolsId(account, index)][account].shares);
-        }
-        return _totalShares;
     }
 
     /* ----------------- Inviter Bonus Info  ----------------- */
@@ -169,7 +164,7 @@ contract Farm is IFarm, Ownable, ReentrancyGuard {
     }
 
     // Rewards amount for inviter bonus in all pools.
-    function inviterBonusEarned(address account) public view override returns (uint256) {
+    function inviterBonusEarned(address account) external view override returns (uint256) {
         uint256 totalEarned = 0;
         for (uint256 index = 0; index < inviterBonusPoolsLength(account); ++index) {
             totalEarned = totalEarned.add(inviterBonusEarnedPerPool(inviterBonusPoolsId(account, index), account));
@@ -178,12 +173,19 @@ contract Farm is IFarm, Ownable, ReentrancyGuard {
     }
 
     // Total shares of inviter shares.
-    function inviterBonusShares(address account) external view override returns (uint256) {
-        uint256 _totalShares = 0;
-        for (uint256 index = 0; index < inviterBonusPoolsLength(account); ++index) {
-            _totalShares = _totalShares.add(inviterBonus[inviterBonusPoolsId(account, index)][account].shares);
+    function inviterBonusSharesAndIds(address account) external view returns (uint256[] memory, uint256[] memory) {
+        uint256 len = inviterBonusPoolsLength(account);
+        
+        uint256[] memory shares = new uint256[](len);
+        uint256[] memory ids = new uint256[](len);
+
+        for (uint256 index = 0; index < len; ++index) {
+            uint256 poolId = inviterBonusPoolsId(account, index);
+            ids[index] = poolId;
+            shares[index] = inviterBonus[poolId][account].shares;
         }
-        return _totalShares;
+
+        return (shares, ids);
     }
 
 
@@ -216,7 +218,6 @@ contract Farm is IFarm, Ownable, ReentrancyGuard {
     function getBonusRewardsPerPool(uint256 poolId, address account)
         public
         override
-        nonReentrant
         checkPoolId(poolId)
     {
         _updateBonus(poolId, account);
@@ -243,8 +244,8 @@ contract Farm is IFarm, Ownable, ReentrancyGuard {
         override
         nonReentrant
     {
-        for (uint256 index = 0; index < bonusPoolsLength(account); ++index) {
-            getBonusRewardsPerPool(bonusPoolsId(account, index), account);
+        for (uint256 index = bonusPoolsLength(account); index > 0; --index) {
+            getBonusRewardsPerPool(bonusPoolsId(account, index - 1), account);
         }
     }
 
@@ -253,7 +254,6 @@ contract Farm is IFarm, Ownable, ReentrancyGuard {
     function getInviterBonusRewardsPerPool(uint256 poolId, address account)
         public
         override
-        nonReentrant
         checkPoolId(poolId)
     {
         _updateInviterBonus(poolId, account);
@@ -280,8 +280,8 @@ contract Farm is IFarm, Ownable, ReentrancyGuard {
         override
         nonReentrant
     {
-        for (uint256 index = 0; index < inviterBonusPoolsLength(account); ++index) {
-            getInviterBonusRewardsPerPool(inviterBonusPoolsId(account, index), account);
+        for (uint256 index = inviterBonusPoolsLength(account); index > 0; --index) {
+            getInviterBonusRewardsPerPool(inviterBonusPoolsId(account, index - 1), account);
         }
     }
 
@@ -455,7 +455,7 @@ contract Farm is IFarm, Ownable, ReentrancyGuard {
 
         // Need decrease bonus.
         if (userBonus.shares > maxBonusShares) {
-            uint256 bonusReduction = userBonus.shares.mul(maxBonusShares);
+            uint256 bonusReduction = userBonus.shares.sub(maxBonusShares);
             uint256 inviterBonusReduction = bonusRatio == inviterBonusRatio ?
                 bonusReduction : bonusReduction.mul(inviterBonusRatio).div(bonusRatio);
 
@@ -499,9 +499,14 @@ contract Farm is IFarm, Ownable, ReentrancyGuard {
 
     /* ==================================== Only owner ==================================== */
 
-    function notifyRewardsAmount(uint256 poolId, uint256 reward, uint256 leftPeriodTimes)
+    function notifyRewardsAmount(
+        uint256 poolId,
+        uint256 reward,
+        uint256 leftPeriodTimes,
+        uint256 periodDuration,
+        uint256 leftRatioNextPeriod
+    )
         external
-        override
         onlyOwner
         checkPoolId(poolId)
         updateRewards(poolId, address(0))
@@ -510,20 +515,22 @@ contract Farm is IFarm, Ownable, ReentrancyGuard {
 
         if (block.timestamp >= pool.periodFinish) {
             // If reward period finished
-            pool.rewardRate = reward.div(pool.periodDuration);
+            pool.rewardRate = reward.div(periodDuration);
         } else {
             // If reward period doesn't finished, added the remain reward.
             uint256 remaining = pool.periodFinish.sub(block.timestamp);
             uint256 leftover = remaining.mul(pool.rewardRate);
-            pool.rewardRate = reward.add(leftover).div(pool.periodDuration);
+            pool.rewardRate = reward.add(leftover).div(periodDuration);
         }
 
         DEMA.mint(address(this), reward);
-        pool.rewardsed = reward;
-        pool.rewardsNextPeriod = pool.rewardsed.mul(pool.leftRatioNextPeriod).div(100);
+        pool.rewardsed = pool.rewardsed.add(reward);
+        pool.rewardsNextPeriod = reward.mul(leftRatioNextPeriod).div(100);
         pool.leftPeriodTimes = leftPeriodTimes;
         pool.lastUpdateTime = block.timestamp;
-        pool.periodFinish = block.timestamp.add(pool.periodDuration);
+        pool.periodFinish = block.timestamp.add(periodDuration);
+        pool.periodDuration = periodDuration;
+        pool.leftRatioNextPeriod = leftRatioNextPeriod;
 
         emit RewardAdded(poolId, reward, pool.leftPeriodTimes);
     }
@@ -536,7 +543,6 @@ contract Farm is IFarm, Ownable, ReentrancyGuard {
         address operator
     )
         external
-        override
         onlyOwner
     {
         PoolInfo storage pool = poolInfo[nextPoolId];
@@ -561,23 +567,23 @@ contract Farm is IFarm, Ownable, ReentrancyGuard {
         pool.totalShares = 0;
     }
 
-    function stop(uint256 poolId) external override onlyOwner {
+    function stop(uint256 poolId) 
+        external
+        checkPoolId(poolId)
+        updateRewards(poolId, address(0)) 
+        onlyOwner 
+    {
         PoolInfo storage pool = poolInfo[poolId];
+
+        // Burn the leftover amount.
+        uint256 remaining = pool.periodFinish.sub(block.timestamp);
+        uint256 leftover = remaining.mul(pool.rewardRate);
+        DEMA.burn(address(this), leftover);
+        pool.rewardsed = pool.rewardsed.sub(leftover);
 
         pool.leftPeriodTimes = 0;
         pool.rewardsNextPeriod = 0;
         pool.periodFinish = block.timestamp;
-    }
-
-    function burn(uint256 poolId) external override onlyOwner {
-        PoolInfo storage pool = poolInfo[poolId];
-
-        // Make sure this pool is completely deprecated
-        require(pool.periodFinish <= block.timestamp);
-        require(pool.totalShares == 0, "Total shares not equal to 0");
-
-        uint256 leftAmount = pool.rewardsed.sub(pool.rewardsPaid);
-        DEMA.burn(address(this), leftAmount);
     }
 
     /* ========== EVENTS ========== */
